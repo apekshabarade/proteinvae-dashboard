@@ -1,0 +1,12 @@
+{
+    "VOCAB_SIZE": 24,
+    "LATENT_DIM": 128,
+    "EMBED_DIM": 256,
+    "HIDDEN_DIM": 256,
+    "NUM_LAYERS": 4,
+    "NUM_HEADS": 8,
+    "MAX_LENGTH": 384,
+    "DEVICE": "cuda",
+    "MODEL_TYPE": "Hybrid Transformer-BiLSTM ProteinVAE",
+    "TRAINING_TYPE": "Research-Grade Stable VAE"
+}

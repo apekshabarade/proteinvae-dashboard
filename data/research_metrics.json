@@ -1,0 +1,9 @@
+{
+    "Novelty_Score": 1.0,
+    "Diversity_Score": 0.932,
+    "Sequence_Entropy": 4.1816,
+    "ProtBERT_Alignment": 0.9888,
+    "Latent_PCA_Variance": 0.7994,
+    "Foldability_Score": 4.4,
+    "Biological_Realism": 0.9
+}
