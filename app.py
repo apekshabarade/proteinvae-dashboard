@@ -772,6 +772,31 @@ header[data-testid="stHeader"] {
     .arch-table { font-size: 0.88rem; }
     .arch-table th, .arch-table td { padding: 10px 12px; }
 }
+
+/* ── Latest generated protein highlight ───────────────────────────────────── */
+.latest-highlight {
+    background: rgba(0, 245, 255, 0.1);
+    border: 2px solid rgba(0, 245, 255, 0.55);
+    border-radius: 12px;
+    padding: 1rem 1.15rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 0 24px rgba(0, 245, 255, 0.2);
+}
+
+.latest-highlight .protein-meta-title {
+    font-family: 'Orbitron', sans-serif;
+    color: #00F5FF;
+    font-weight: 700;
+    font-size: 1.05rem;
+    margin-bottom: 0.35rem;
+}
+
+.latest-highlight .protein-meta-detail {
+    color: #D1D5DB;
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1.6;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -781,6 +806,145 @@ header[data-testid="stHeader"] {
 @st.cache_resource(show_spinner="Loading ProteinVAE model…")
 def _cached_model():
     return load_model()
+
+
+LATEST_PROTEIN_KEY = "__latest__"
+CUSTOM_INPUT_KEY = "__custom__"
+
+
+def init_session_storage() -> None:
+    """Initialize global session keys for generated proteins."""
+    defaults: dict = {
+        "generated_protein": None,
+        "generated_history": [],
+        "last_sequence": "",
+        "last_type": "",
+        "last_id": "",
+        "force_analysis_latest": False,
+        "analysis_select_key": LATEST_PROTEIN_KEY,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def store_generated_protein(sequence: str, protein_type: str, protein_id: str) -> None:
+    """Persist latest generation and append to session history."""
+    stats = analyze_sequence(sequence)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    entry = {
+        "sequence": sequence,
+        "type": protein_type,
+        "id": protein_id,
+        "timestamp": timestamp,
+        "entropy": stats["entropy"],
+        "hydrophobicity": stats["hydrophobicity"],
+        "length": stats["length"],
+        "dominant_aa": stats["dominant_aa"],
+        "confidence": stats["confidence"],
+    }
+
+    st.session_state.generated_protein = entry
+    st.session_state.generated_history.insert(
+        0,
+        {
+            "sequence": sequence,
+            "type": protein_type,
+            "id": protein_id,
+            "timestamp": timestamp,
+            "entropy": stats["entropy"],
+            "hydrophobicity": stats["hydrophobicity"],
+        },
+    )
+
+    # Backward compatibility (Download page, etc.)
+    st.session_state.last_sequence = sequence
+    st.session_state.last_type = protein_type
+    st.session_state.last_id = protein_id
+    st.session_state.force_analysis_latest = True
+    st.session_state.analysis_select_key = LATEST_PROTEIN_KEY
+
+
+def build_analysis_sequence_options() -> tuple[list[str], list[str], dict[str, str]]:
+    """Return (keys, labels, key→sequence) for the analysis dropdown."""
+    keys: list[str] = []
+    labels: list[str] = []
+    lookup: dict[str, str] = {}
+
+    latest = st.session_state.get("generated_protein")
+    if latest and latest.get("sequence"):
+        keys.append(LATEST_PROTEIN_KEY)
+        labels.append(
+            f"⭐ Latest Generated Protein — {latest['id']} ({latest['timestamp']})"
+        )
+        lookup[LATEST_PROTEIN_KEY] = latest["sequence"]
+
+    seen_ids: set[str] = set()
+    if latest:
+        seen_ids.add(latest.get("id", ""))
+
+    for item in st.session_state.get("generated_history", []):
+        pid = item.get("id", "")
+        if pid in seen_ids:
+            continue
+        seen_ids.add(pid)
+        key = f"hist_{pid}"
+        keys.append(key)
+        labels.append(f"{pid} — {item.get('type', 'Unknown')} ({item.get('timestamp', '')})")
+        lookup[key] = item["sequence"]
+
+    keys.append(CUSTOM_INPUT_KEY)
+    labels.append("Custom Input")
+    return keys, labels, lookup
+
+
+def render_full_sequence_analysis(sequence: str, meta: dict | None = None) -> None:
+    """Charts and metrics for a protein sequence."""
+    if meta:
+        st.markdown(
+            f"""
+<div class="latest-highlight">
+  <div class="protein-meta-title">⭐ Latest Generated Protein</div>
+  <div class="protein-meta-detail">
+    <strong>ID:</strong> {meta.get("id", "—")} &nbsp;|&nbsp;
+    <strong>Type:</strong> {meta.get("type", "—")} &nbsp;|&nbsp;
+    <strong>Generated:</strong> {meta.get("timestamp", "—")}
+  </div>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    stats = analyze_sequence(sequence)
+    render_metric_grid([
+        ("Length", stats["length"]),
+        ("Entropy", f"{stats['entropy']:.3f}"),
+        ("Hydrophobicity", f"{stats['hydrophobicity']:.3f}"),
+        ("Dominant AA", stats["dominant_aa"]),
+    ])
+    st.markdown(
+        f'<p style="color:#FFFFFF;font-weight:700;font-size:1.05rem;">'
+        f'Confidence Score: <span style="color:#00F5FF;">{stats["confidence"]:.1%}</span></p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        " ".join(
+            f'<span class="metric-pill">{aa}: {v*100:.1f}%</span>'
+            for aa, v in sorted(stats["composition"].items(), key=lambda x: -x[1])[:8]
+        ),
+        unsafe_allow_html=True,
+    )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.plotly_chart(plot_aa_frequency(sequence), use_container_width=True)
+    with col_b:
+        st.plotly_chart(plot_sequence_profile(sequence), use_container_width=True)
+
+    st.markdown("**Sequence (formatted)**")
+    formatted = " ".join(sequence[i : i + 10] for i in range(0, len(sequence), 10))
+    st.markdown(f'<div class="seq-box">{formatted}</div>', unsafe_allow_html=True)
 
 
 def render_stat_cards():
@@ -923,11 +1087,6 @@ def page_generation():
         generate_btn = st.button("Generate Protein", type="primary", use_container_width=True)
 
     with col2:
-        if "last_sequence" not in st.session_state:
-            st.session_state.last_sequence = ""
-            st.session_state.last_type = ""
-            st.session_state.last_id = ""
-
         if generate_btn:
             with st.spinner("Sampling latent space & decoding sequence…"):
                 try:
@@ -938,21 +1097,28 @@ def page_generation():
                         temperature=temperature, device=device,
                     )
                     pid = f"Gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    st.session_state.last_sequence = seq
-                    st.session_state.last_type = protein_type
-                    st.session_state.last_id = pid
+                    store_generated_protein(seq, protein_type, pid)
                     save_generated_to_files(seq, pid, protein_type)
-                    st.success(f"Generated **{pid}** ({len(seq)} residues)")
+                    st.success(
+                        f"Generated **{pid}** ({len(seq)} residues) — "
+                        "available in **Protein Analysis**"
+                    )
+                    st.rerun()
                 except Exception as ex:
                     st.error(f"Generation failed: {ex}")
 
-        if st.session_state.last_sequence:
+        if st.session_state.get("generated_protein"):
+            gp = st.session_state.generated_protein
+            seq = gp["sequence"]
+        elif st.session_state.last_sequence:
+            seq = st.session_state.last_sequence
+        else:
+            seq = ""
+
+        if seq:
             st.markdown("**Generated Sequence**")
-            st.markdown(
-                f'<div class="seq-box">{st.session_state.last_sequence}</div>',
-                unsafe_allow_html=True,
-            )
-            stats = analyze_sequence(st.session_state.last_sequence)
+            st.markdown(f'<div class="seq-box">{seq}</div>', unsafe_allow_html=True)
+            stats = analyze_sequence(seq)
             render_metric_grid([
                 ("Length", stats["length"]),
                 ("Hydrophobicity", f"{stats['hydrophobicity']:.3f}"),
@@ -1035,34 +1201,69 @@ def page_latent():
 def page_analysis():
     st.markdown('<p class="section-header">Protein Sequence Analysis</p>', unsafe_allow_html=True)
 
-    df = load_generated_proteins()
-    options = ["Custom input"]
-    if len(df) > 0:
-        options += df["Protein_ID"].tolist()[:50]
+    keys, labels, lookup = build_analysis_sequence_options()
+    has_latest = st.session_state.get("generated_protein") is not None
 
-    choice = st.selectbox("Select sequence", options)
-    if choice == "Custom input":
-        sequence = st.text_area("Enter protein sequence", "MIDSLIRGILEAEGRVVDDVLRADFVLDRLTLSEERIVAKGAVDAGVEIVARAGRPEKAAVILGVASGMPSLALRPEMRSFMSSLSLADEFLHVKAAWDWRHPAAAAAGFALGMGTAALTYLTGIARQAFISRPDDMGVWLKRHGMFEVVYRAVDAGVALPNLTLEWQ")
+    btn_col, sel_col = st.columns([1, 2])
+    with btn_col:
+        if st.button(
+            "Analyze Latest Generated Protein",
+            type="primary",
+            use_container_width=True,
+            disabled=not has_latest,
+        ):
+            st.session_state.force_analysis_latest = True
+            st.session_state.analysis_select_key = LATEST_PROTEIN_KEY
+            st.rerun()
+
+    with sel_col:
+        if not has_latest:
+            st.info("Generate a protein on the **Protein Generation** page to analyze it here.")
+
+        if st.session_state.get("force_analysis_latest") and LATEST_PROTEIN_KEY in keys:
+            st.session_state.analysis_select_key = LATEST_PROTEIN_KEY
+            st.session_state.force_analysis_latest = False
+
+        current_key = st.session_state.get("analysis_select_key", keys[0])
+        if current_key not in keys:
+            current_key = keys[0]
+        default_index = keys.index(current_key)
+
+        choice_label = st.selectbox("Select sequence", labels, index=default_index)
+        selected_key = keys[labels.index(choice_label)]
+        st.session_state.analysis_select_key = selected_key
+
+    if selected_key == CUSTOM_INPUT_KEY:
+        default_seq = ""
+        if has_latest:
+            default_seq = st.session_state.generated_protein["sequence"]
+        sequence = st.text_area(
+            "Enter protein sequence",
+            default_seq or (
+                "MIDSLIRGILEAEGRVVDDVLRADFVLDRLTLSEERIVAKGAVDAGVEIVARAGRPEKAAVILGVASGMPSLALRPEMRSFMSSLSLADEFLHVKAAWDWRHPAAAAAGFALGMGTAALTYLTGIARQAFISRPDDMGVWLKRHGMFEVVYRAVDAGVALPNLTLEWQ"
+            ),
+            height=120,
+        )
+        meta = None
     else:
-        sequence = str(df.loc[df["Protein_ID"] == choice, "Sequence"].iloc[0])
+        sequence = lookup.get(selected_key, "")
+        meta = (
+            st.session_state.generated_protein
+            if selected_key == LATEST_PROTEIN_KEY
+            else next(
+                (h for h in st.session_state.generated_history if f"hist_{h['id']}" == selected_key),
+                None,
+            )
+        )
 
     if sequence:
-        stats = analyze_sequence(sequence)
-        render_metric_grid([
-            ("Length", stats["length"]),
-            ("Entropy", f"{stats['entropy']:.3f}"),
-            ("Confidence", f"{stats['confidence']:.1%}"),
-        ])
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.plotly_chart(plot_aa_frequency(sequence), use_container_width=True)
-        with col_b:
-            st.plotly_chart(plot_sequence_profile(sequence), use_container_width=True)
-
-        st.markdown("**Sequence (formatted)**")
-        formatted = " ".join(sequence[i : i + 10] for i in range(0, len(sequence), 10))
-        st.markdown(f'<div class="seq-box">{formatted}</div>', unsafe_allow_html=True)
+        show_highlight = selected_key == LATEST_PROTEIN_KEY and meta is not None
+        render_full_sequence_analysis(
+            sequence,
+            meta=meta if show_highlight else None,
+        )
+    elif selected_key != CUSTOM_INPUT_KEY:
+        st.warning("No sequence found for the selected entry.")
 
 
 def page_download():
@@ -1098,11 +1299,21 @@ def page_download():
             use_container_width=True,
         )
 
-    if st.session_state.get("last_sequence"):
+    gp = st.session_state.get("generated_protein")
+    if gp and gp.get("sequence"):
+        st.markdown("#### Export Last Generated Protein")
+        seq = gp["sequence"]
+        pid = gp.get("id", "latest")
+        ptype = gp.get("type", "Unknown")
+    elif st.session_state.get("last_sequence"):
         st.markdown("#### Export Last Generated Protein")
         seq = st.session_state.last_sequence
         pid = st.session_state.get("last_id", "latest")
         ptype = st.session_state.get("last_type", "Unknown")
+    else:
+        seq = ""
+
+    if seq:
         st.download_button(
             "Export Last as FASTA",
             data=export_fasta_download([(pid, ptype, seq)]),
@@ -1110,6 +1321,8 @@ def page_download():
             mime="text/plain",
         )
 
+
+init_session_storage()
 
 # ── Sidebar navigation ─────────────────────────────────────────────────────────
 PAGES = {
